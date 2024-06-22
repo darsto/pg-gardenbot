@@ -10,7 +10,7 @@ use std::time::Duration;
 use levenshtein::levenshtein;
 use winapi::um::winuser::{INPUT_u, SendInput, INPUT, INPUT_KEYBOARD, KEYEVENTF_KEYUP};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum CurrentlySelected {
     Thisty,
     Hungry,
@@ -55,13 +55,14 @@ impl Grower {
     pub fn new() -> Self {
         let (tx, rx): (Sender<GrowerThreadKick>, Receiver<GrowerThreadKick>) = mpsc::channel();
         let num_rounds = Arc::new(AtomicUsize::new(0));
-        let thread = GrowerThread::spawn(rx, num_rounds.clone());
+        let cur_selected = Arc::new(Mutex::new(None));
+        let thread = GrowerThread::spawn(rx, num_rounds.clone(), cur_selected.clone());
 
         Self {
             thread: RefCell::new(Some(thread)),
             tx: Some(tx),
             num_rounds,
-            cur_selected: Arc::new(Mutex::new(None)),
+            cur_selected,
         }
     }
 
@@ -105,13 +106,14 @@ impl Grower {
     }
 }
 
+#[derive(Debug)]
 struct GrowerThread {
     num_rounds: Arc<AtomicUsize>,
     rx: Receiver<GrowerThreadKick>,
 
     num_objects: usize,
     use_delay: Duration,
-    cur_selected: Option<CurrentlySelected>,
+    cur_selected: Arc<Mutex<Option<CurrentlySelected>>>,
 }
 
 type GrowerThreadHandle = JoinHandle<()>;
@@ -124,7 +126,11 @@ struct GrowerThreadKick {
 }
 
 impl GrowerThread {
-    fn spawn(rx: Receiver<GrowerThreadKick>, num_rounds: Arc<AtomicUsize>) -> GrowerThreadHandle {
+    fn spawn(
+        rx: Receiver<GrowerThreadKick>,
+        num_rounds: Arc<AtomicUsize>,
+        cur_selected: Arc<Mutex<Option<CurrentlySelected>>>,
+    ) -> GrowerThreadHandle {
         thread::spawn(move || {
             let inner = GrowerThread {
                 num_rounds,
@@ -132,7 +138,7 @@ impl GrowerThread {
 
                 num_objects: 0,
                 use_delay: Duration::ZERO,
-                cur_selected: None,
+                cur_selected,
             };
             inner.run();
         })
@@ -145,7 +151,6 @@ impl GrowerThread {
                 Ok(kick) => {
                     self.num_objects = kick.num_objects;
                     self.use_delay = kick.use_delay;
-
                     // keep running until either we finish or get stopped
                     self.num_rounds.store(kick.num_rounds, Ordering::Release);
                     while self.num_rounds.load(Ordering::Acquire) > 0 {
@@ -162,7 +167,8 @@ impl GrowerThread {
         }
 
         use CurrentlySelected as C;
-        match self.cur_selected {
+        let sel = *self.cur_selected.lock().unwrap();
+        match sel {
             None => {
                 return self.interruptible_sleep(Duration::from_millis(5000));
             }

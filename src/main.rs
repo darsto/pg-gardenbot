@@ -316,7 +316,7 @@ fn ocr_bmpdata(bmpdata: &[u8]) -> String {
         .args([
             "fd:0",
             "-color-threshold",
-            "sRGB(149,127,86)-sRGB(209,187,146)",
+            "sRGB(70,70,70)-sRGB(230,210,160)",
             "-negate",
             "fd:1",
         ])
@@ -383,5 +383,7 @@ fn main() {
 
     let app = BasicApp::build_ui(Default::default()).expect("Failed to build UI");
     nwg::dispatch_thread_events();
+
+    println!("Exiting");
     app.state.lock().unwrap().grower.join().unwrap();
 }
