@@ -5,17 +5,18 @@ extern crate native_windows_derive as nwd;
 extern crate native_windows_gui as nwg;
 
 use bmp::{BMPHeader, InfoHeader};
-use grower::Grower;
+use grower::{CurrentlySelected, Grower};
 use nwd::NwgUi;
 use nwg::NativeUi;
+use winapi::um::winuser::WS_EX_TRANSPARENT;
 
-use std::sync::atomic::Ordering;
-use std::{convert::TryFrom, sync::Arc};
 use std::io::Write;
 use std::os::windows::process::CommandExt;
 use std::process::Stdio;
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::time::Duration;
+use std::{convert::TryFrom, sync::Arc};
 use winapi::um::winbase::CREATE_NO_WINDOW;
 
 mod bmp;
@@ -29,60 +30,61 @@ use screenshot::{Rectangle, Screenshot};
 
 #[derive(Default, NwgUi)]
 pub struct BasicApp {
-    #[nwg_control(size: (275, 220), position: (100, 100), icon: None, topmost: true, title: "Gardenbot", flags: "WINDOW|VISIBLE")]
+    #[nwg_control(size: (275, 225), position: (100, 100), icon: None, topmost: true, title: "Gardenbot", flags: "WINDOW|VISIBLE")]
     #[nwg_events(OnInit: [BasicApp::on_init], OnWindowClose: [BasicApp::on_close])]
     window: nwg::Window,
 
-    #[nwg_control(flags: "VISIBLE|MULTI_LINE|DISABLED", position: (10, 10), size: (156, 65))]
+    #[nwg_control(flags: "VISIBLE|MULTI_LINE|DISABLED", position: (10, 10), size: (255, 65), ex_flags: WS_EX_TRANSPARENT)]
     rich_text_box: nwg::RichLabel,
 
     #[nwg_control(text: "Start", position: (175, 10), size: (90, 25))]
     #[nwg_events(OnButtonClick: [BasicApp::on_startstop_btn])]
     startstop_btn: nwg::Button,
 
-    #[nwg_control(text: "Num rounds:", position: (10, 79), size: (150, 20))]
-    num_rounds_label: nwg::Label,
+    #[nwg_control(position: (10, 76), size: (255, 30))]
+    select_area_bgimg: nwg::ImageFrame,
 
-    #[nwg_control(text: "0", flags: "NUMBER|VISIBLE", limit: 3, align: nwg::HTextAlign::Center, position: (176, 77), size: (88, 20))]
-    num_rounds_input: nwg::TextInput,
+    #[nwg_control(position: (10, 76), size: (0, 0))]
+    select_area_img: nwg::ImageFrame,
 
-    #[nwg_control(text: "Num growing objects:", position: (10, 104), size: (150, 20))]
-    num_growing_objects_label: nwg::Label,
-
-    #[nwg_control(text: "0", flags: "NUMBER|VISIBLE", limit: 2, align: nwg::HTextAlign::Center, position: (176, 102), size: (88, 20))]
-    num_growing_objects_input: nwg::TextInput,
-
-    #[nwg_control(text: "Extra delay (sec):", position: (10, 129), size: (150, 20))]
-    extra_delay_sec_label: nwg::Label,
-
-    #[nwg_control(text: "0", flags: "NUMBER|VISIBLE", limit: 2, align: nwg::HTextAlign::Center, position: (176, 127), size: (88, 20))]
-    extra_delay_sec_input: nwg::TextInput,
-
-    #[nwg_control(text: "Selected Entity Area:", position: (10, 155), size: (150, 20))]
+    #[nwg_control(text: "Selected Entity Area:", position: (10, 118), size: (150, 20))]
     select_area_label: nwg::Label,
 
-    #[nwg_control(text: "Set", position: (175, 150), size: (90, 25))]
+    #[nwg_control(text: "Set", position: (175, 113), size: (90, 25))]
     #[nwg_events(OnButtonClick: [BasicApp::on_select_area_btn])]
     select_area_btn: nwg::Button,
 
-    #[nwg_control(position: (10, 180), size: (255, 30))]
-    select_area_bgimg: nwg::ImageFrame,
+    #[nwg_control(text: "Num rounds:", position: (10, 145), size: (150, 20))]
+    num_rounds_label: nwg::Label,
 
-    #[nwg_control(position: (10, 180), size: (0, 0))]
-    select_area_img: nwg::ImageFrame,
+    #[nwg_control(text: "0", flags: "NUMBER|VISIBLE", limit: 3, align: nwg::HTextAlign::Center, position: (176, 143), size: (88, 20))]
+    num_rounds_input: nwg::TextInput,
 
-    #[nwg_control(parent: window, interval: Duration::from_millis(5000))]
-    #[nwg_events(OnTimerTick: [BasicApp::on_tick_5s])]
-    select_update_timer: nwg::AnimationTimer,
+    #[nwg_control(text: "Num growing objects:", position: (10, 170), size: (150, 20))]
+    num_growing_objects_label: nwg::Label,
+
+    #[nwg_control(text: "0", flags: "NUMBER|VISIBLE", limit: 2, align: nwg::HTextAlign::Center, position: (176, 168), size: (88, 20))]
+    num_growing_objects_input: nwg::TextInput,
+
+    #[nwg_control(text: "Extra delay (sec):", position: (10, 196), size: (150, 20))]
+    extra_delay_sec_label: nwg::Label,
+
+    #[nwg_control(text: "0", flags: "NUMBER|VISIBLE", limit: 2, align: nwg::HTextAlign::Center, position: (176, 193), size: (88, 20))]
+    extra_delay_sec_input: nwg::TextInput,
+
+    #[nwg_control(parent: window, interval: Duration::from_millis(1500))]
+    #[nwg_events(OnTimerTick: [BasicApp::on_tick_1s])]
+    timer_1s: nwg::AnimationTimer,
 
     state: Mutex<AppState>,
     // outside the state mutex because accessing it can block
-    cropper: Mutex<CropperWrapper>,
+    cropper: Mutex<Cropper>,
 }
 
 struct AppState {
     select_rect: Option<Rectangle<f64>>,
     select_rect_bitmap: nwg::Bitmap,
+    scanned_str: Option<String>,
 
     org_num_rounds: usize,
     grower: Arc<Grower>,
@@ -93,18 +95,11 @@ impl Default for AppState {
         Self {
             select_rect: None,
             select_rect_bitmap: Default::default(),
+            scanned_str: None,
 
             org_num_rounds: 0,
             grower: Grower::new(),
         }
-    }
-}
-
-struct CropperWrapper(Cropper);
-
-impl Default for CropperWrapper {
-    fn default() -> Self {
-        Self(Cropper::new())
     }
 }
 
@@ -116,14 +111,59 @@ impl std::fmt::Debug for AppState {
 
 impl BasicApp {
     fn on_init(&self) {
-        self.select_update_timer.start();
+        self.timer_1s.start();
         let mut state = self.state.lock().unwrap();
         self.init_select_area_bgimg(&mut state);
-        self.update_rich_text(&mut state, "");
+        self.update_rich_text(&state);
+    }
+
+    fn on_select_area_btn(&self) {
+        let screenshot = Screenshot::take();
+        match self.cropper.lock().unwrap().apply(&screenshot) {
+            Ok(Some(rect)) if rect.w > 0.0 && rect.h > 0.0 => {
+                let mut state = self.state.lock().unwrap();
+                state.select_rect = Some(rect);
+            }
+            Err(e) => {
+                nwg::modal_info_message(&self.window, "Error", &format!("{:?}", e));
+            }
+            _ => {
+                return;
+            }
+        }
+        let mut state = self.state.lock().unwrap();
+        self.refresh_logic_and_ui(&mut state);
+    }
+
+    fn on_startstop_btn(&self) {
+        let mut state = self.state.lock().unwrap();
+
+        if state.select_rect.is_none() {
+            nwg::modal_info_message(&self.window, "Error", "You need to select the area first");
+            return;
+        }
+
+        let num_rounds = self.num_rounds_input.text().parse::<usize>().unwrap();
+        if num_rounds == 0 {
+            nwg::modal_info_message(
+                &self.window,
+                "Error",
+                "You need to set the number of rounds",
+            );
+            return;
+        }
+
+        self.startstop(&mut state, self.startstop_btn.text() == "Start");
+        self.refresh_logic_and_ui(&mut state);
+    }
+
+    fn on_tick_1s(&self) {
+        let mut state = self.state.lock().unwrap();
+        self.refresh_logic_and_ui(&mut state);
     }
 
     fn init_select_area_bgimg(&self, state: &mut AppState) {
-        let dimensions: (u32, u32) = (255, 30);
+        let dimensions = self.select_area_bgimg.size();
 
         let mut bmpdata: Vec<u8> = Vec::new();
         let row_size = (dimensions.0 * 3).next_multiple_of(4) as usize;
@@ -151,16 +191,16 @@ impl BasicApp {
         self.select_area_bgimg.set_bitmap(Some(bitmap));
     }
 
-    fn update_rich_text(&self, state: &mut AppState, scanned_str: &str) {
+    fn update_rich_text(&self, state: &AppState) {
         let mut rbuilder = richbuilder::RichBuilder::new(&self.rich_text_box);
 
         rbuilder.append("Gardenbot is ", nwg::CharFormat::default());
-        if state.grower.num_rounds.load(Ordering::Relaxed) > 0 {
+        if state.grower.running.load(Ordering::Relaxed) {
             rbuilder.append(
                 "online",
                 nwg::CharFormat {
                     effects: Some(nwg::CharEffects::BOLD),
-                    text_color: Some([0, 200, 0]),
+                    text_color: Some([0, 140, 0]),
                     ..Default::default()
                 },
             );
@@ -174,40 +214,107 @@ impl BasicApp {
                 },
             );
         }
-        rbuilder.append("\r\n", nwg::CharFormat::default());
-        rbuilder.append("Scanned:\r\n", nwg::CharFormat::default());
-        rbuilder.append(scanned_str, nwg::CharFormat::default());
+        rbuilder.append("\n", nwg::CharFormat::default());
+        if let Some(scanned_str) = &state.scanned_str {
+            let status_strs = state.grower.status_str.lock().unwrap();
+            rbuilder.append(status_strs[0].as_str(), nwg::CharFormat::default());
+            rbuilder.append("\n", nwg::CharFormat::default());
+            rbuilder.append(status_strs[1].as_str(), nwg::CharFormat::default());
+            rbuilder.append("\n", nwg::CharFormat::default());
+
+            rbuilder.append("Scanned: ", nwg::CharFormat::default());
+            if scanned_str.trim().is_empty() {
+                rbuilder.append("<nothing>", nwg::CharFormat::default());
+            } else {
+                rbuilder.append(scanned_str, nwg::CharFormat::default());
+                rbuilder.append(" -> ", nwg::CharFormat::default());
+
+                use CurrentlySelected as C;
+                let parsed =
+                    C::try_from(state.grower.cur_selected.load(Ordering::Relaxed)).unwrap();
+                match parsed {
+                    C::None => rbuilder.append("None", nwg::CharFormat::default()),
+                    C::Growing => rbuilder.append("Growing", nwg::CharFormat::default()),
+                    C::Thisty => rbuilder.append(
+                        "Thirsty",
+                        nwg::CharFormat {
+                            effects: Some(nwg::CharEffects::BOLD),
+                            text_color: Some([40, 130, 170]),
+                            ..Default::default()
+                        },
+                    ),
+                    C::Hungry => rbuilder.append(
+                        "Hungry",
+                        nwg::CharFormat {
+                            effects: Some(nwg::CharEffects::BOLD),
+                            text_color: Some([126, 98, 86]),
+                            ..Default::default()
+                        },
+                    ),
+                    C::Ripe => rbuilder.append(
+                        "Ripe",
+                        nwg::CharFormat {
+                            effects: Some(nwg::CharEffects::BOLD),
+                            text_color: Some([0, 140, 0]),
+                            ..Default::default()
+                        },
+                    ),
+                }
+            }
+        } else {
+            rbuilder.append(
+                "No entity area selected\n",
+                nwg::CharFormat {
+                    effects: Some(nwg::CharEffects::BOLD),
+                    text_color: Some([100, 100, 100]),
+                    ..Default::default()
+                },
+            );
+        }
     }
 
-    fn on_tick_5s(&self) {
-        let mut state = self.state.lock().unwrap();
-        self.update_logic(&mut state);
+    fn refresh_logic_and_ui(&self, state: &mut AppState) {
+        self.refresh_logic(state);
+        self.update_rich_text(state);
     }
 
-    fn update_logic(&self, state: &mut AppState) {
-        let running = state.grower.num_rounds.load(Ordering::Relaxed) > 0;
+    fn refresh_logic(&self, state: &mut AppState) {
+        let running = state.grower.running.load(Ordering::Relaxed);
         if running != (self.startstop_btn.text() == "Stop") {
             self.startstop(state, running);
-            self.update_rich_text(state, "");
-            return;
         }
 
-        let Some(bmpdata) = self.update_select_rect(state) else {
-            self.update_rich_text(state, "");
-            return;
+        if let Some(bmpdata) = self.refresh_select_rect(state) {
+            let scanned_str = state
+                .scanned_str
+                .insert(ocr_bmpdata(bmpdata.as_slice()).replace(['\n', '\r'], ""));
+
+            use CurrentlySelected as C;
+            let matching_selection = C::try_from(scanned_str.as_str()).unwrap();
+
+            let prev_selection = C::try_from(
+                state
+                    .grower
+                    .cur_selected
+                    .swap(matching_selection.into(), Ordering::Relaxed),
+            )
+            .unwrap();
+
+            if matching_selection != prev_selection
+                && (prev_selection == C::None || prev_selection == C::Growing)
+            {
+                state.grower.kick();
+            }
+        } else {
+            state.scanned_str = None;
         };
-
-        let scanned_str = ocr_bmpdata(bmpdata.as_slice()).replace('\n', "");
-        self.update_rich_text(state, &scanned_str);
-
-        let matching_selection = grower::CurrentlySelected::try_from(scanned_str.as_str()).unwrap();
-        state.grower.cur_selected.store(matching_selection.into(), Ordering::Relaxed);
     }
 
-    fn update_select_rect(&self, state: &mut AppState) -> Option<Vec<u8>> {
-        let Some(rect) = state.select_rect else {
-            return None;
-        };
+    fn refresh_select_rect(&self, state: &mut AppState) -> Option<Vec<u8>> {
+        let max_dimensions = self.select_area_bgimg.size();
+        let mut rect = state.select_rect?;
+        rect.w = f64::min(rect.w, max_dimensions.0 as f64);
+        rect.h = f64::min(rect.h, max_dimensions.1 as f64);
 
         let screenshot = Screenshot::take();
         let bmpdata = screenshot.get_bmp_data(Rectangle {
@@ -224,47 +331,10 @@ impl BasicApp {
             .unwrap();
 
         self.select_area_img.set_bitmap(Some(bitmap));
-        self.select_area_img
-            .set_size(u32::min(rect.w as u32, 255), u32::min(rect.h as u32, 100));
+        self.select_area_img.set_size(rect.w as u32, rect.h as u32);
+        self.select_area_img.set_visible(true);
 
         Some(bmpdata)
-    }
-
-    fn on_select_area_btn(&self) {
-        let screenshot = Screenshot::take();
-        match self.cropper.lock().unwrap().0.apply(&screenshot) {
-            Ok(Some(rect)) => {
-                let mut state = self.state.lock().unwrap();
-                state.select_rect = Some(rect);
-                self.update_select_rect(&mut state);
-            }
-            Ok(None) => {}
-            Err(e) => {
-                nwg::modal_info_message(&self.window, "Error", &format!("{:?}", e));
-            }
-        }
-    }
-
-    fn on_startstop_btn(&self) {
-        let mut state = self.state.lock().unwrap();
-
-        if state.select_rect.is_none() {
-            nwg::modal_info_message(&self.window, "Error", "You need to select the area first");
-            return;
-        }
-
-        let num_rounds = self.num_rounds_input.text().parse::<usize>().unwrap();
-        if num_rounds == 0 {
-            nwg::modal_info_message(
-                &self.window,
-                "Error",
-                "You need to set the number of rounds",
-            );
-            return;
-        }
-
-        self.startstop(&mut state, self.startstop_btn.text() == "Start");
-        self.update_logic(&mut state);
     }
 
     fn startstop(&self, state: &mut AppState, start: bool) {
@@ -272,12 +342,20 @@ impl BasicApp {
             state.org_num_rounds = self.num_rounds_input.text().parse::<usize>().unwrap();
 
             let grower = &state.grower;
-            grower.num_rounds.store(state.org_num_rounds, Ordering::Relaxed);
-            grower.num_objects.store(self.num_growing_objects_input
-                .text()
-                .parse::<usize>()
-                .unwrap(), Ordering::Relaxed);
-            grower.extra_delay_secs.store(self.extra_delay_sec_input.text().parse::<usize>().unwrap(), Ordering::Relaxed);
+            grower
+                .num_rounds
+                .store(state.org_num_rounds, Ordering::Relaxed);
+            grower.num_objects.store(
+                self.num_growing_objects_input
+                    .text()
+                    .parse::<usize>()
+                    .unwrap(),
+                Ordering::Relaxed,
+            );
+            grower.extra_delay_secs.store(
+                self.extra_delay_sec_input.text().parse::<usize>().unwrap(),
+                Ordering::Relaxed,
+            );
             grower.start();
 
             self.startstop_btn.set_text("Stop");
@@ -303,8 +381,8 @@ impl BasicApp {
             self.select_area_btn.set_enabled(true);
         }
 
-        self.select_update_timer.stop();
-        self.select_update_timer.start();
+        self.timer_1s.stop();
+        self.timer_1s.start();
     }
 
     fn on_close(&self) {
@@ -383,9 +461,8 @@ fn main() {
 
     nwg::Font::set_global_default(Some(font));
 
-    let app = BasicApp::build_ui(Default::default()).expect("Failed to build UI");
+    let _app = BasicApp::build_ui(Default::default()).expect("Failed to build UI");
     nwg::dispatch_thread_events();
 
     println!("Exiting");
-    app.state.lock().unwrap().grower.join().unwrap();
 }

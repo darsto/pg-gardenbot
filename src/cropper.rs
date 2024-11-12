@@ -289,3 +289,9 @@ impl Cropper {
         }
     }
 }
+
+impl Default for Cropper {
+    fn default() -> Self {
+        Self::new()
+    }
+}
