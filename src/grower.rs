@@ -1,17 +1,19 @@
-use std::cell::RefCell;
 use std::convert::TryFrom;
 use std::mem::MaybeUninit;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use levenshtein::levenshtein;
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 use winapi::um::winuser::{INPUT_u, SendInput, INPUT, INPUT_KEYBOARD, KEYEVENTF_KEYUP};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, IntoPrimitive, TryFromPrimitive)]
+#[repr(u8)]
 pub enum CurrentlySelected {
+    None,
     Thisty,
     Hungry,
     Ripe,
@@ -20,13 +22,16 @@ pub enum CurrentlySelected {
 impl TryFrom<&str> for CurrentlySelected {
     type Error = ();
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let Some(item_prefix) = value.split_whitespace().next() else {
-            return Err(());
-        };
+        let mut parts = value.split_whitespace();
+        let item_prefix = loop {
+            let Some(word) = parts.next() else {
+                return Ok(Self::None);
+            };
 
-        if item_prefix.len() < 4 {
-            return Err(());
-        }
+            if word.len() >= 4 {
+                break word;
+            }
+        };
 
         // if the space was not detected (e.g. parsed as .), then limit to 6 - we don't need more
         let item_prefix = &item_prefix[0..std::cmp::min(item_prefix.len(), 6)];
@@ -38,65 +43,60 @@ impl TryFrom<&str> for CurrentlySelected {
         } else if levenshtein(item_prefix, "Bloomi") < 2 || levenshtein(item_prefix, "Ripe") < 2 {
             Ok(Self::Ripe)
         } else {
-            Err(())
+            Ok(Self::None)
         }
     }
 }
 
 #[derive(Debug)]
 pub struct Grower {
-    thread: RefCell<Option<GrowerThreadHandle>>,
-    tx: Option<Sender<GrowerThreadKick>>,
-    num_rounds: Arc<AtomicUsize>,
-    cur_selected: Arc<Mutex<Option<CurrentlySelected>>>,
+    thread: Mutex<Option<GrowerThreadHandle>>,
+    tx: Mutex<Option<Sender<GrowerThreadKick>>>,
+    pub num_rounds: AtomicUsize,
+    pub num_objects: AtomicUsize,
+    pub extra_delay_secs: AtomicUsize,
+    pub cur_selected: AtomicU8,
 }
 
 impl Grower {
-    pub fn new() -> Self {
+    pub fn new() -> Arc<Self> {
         let (tx, rx): (Sender<GrowerThreadKick>, Receiver<GrowerThreadKick>) = mpsc::channel();
-        let num_rounds = Arc::new(AtomicUsize::new(0));
-        let cur_selected = Arc::new(Mutex::new(None));
-        let thread = GrowerThread::spawn(rx, num_rounds.clone(), cur_selected.clone());
 
-        Self {
-            thread: RefCell::new(Some(thread)),
-            tx: Some(tx),
-            num_rounds,
-            cur_selected,
-        }
+        let grower = Arc::new(Self {
+            thread: Mutex::new(None),
+            tx: Mutex::new(Some(tx)),
+            num_rounds: AtomicUsize::new(0),
+            num_objects: AtomicUsize::new(0),
+            extra_delay_secs: AtomicUsize::new(0),
+            cur_selected: AtomicU8::new(CurrentlySelected::None.into()),
+        });
+
+        let thread = GrowerThread::spawn(grower.clone(), rx);
+        *grower.thread.lock().unwrap() = Some(thread);
+        grower
     }
 
-    pub fn start(&self, num_rounds: usize, num_objects: usize, use_delay: Duration) {
+    pub fn start(&self) {
         // first break any currently running session
-        self.num_rounds.store(0, Ordering::Release);
+        self.num_rounds.store(0, Ordering::Relaxed);
         // then start a new one
         self.tx
+            .lock()
+            .unwrap()
             .as_ref()
             .unwrap()
-            .send(GrowerThreadKick {
-                num_rounds,
-                num_objects,
-                use_delay,
-            })
+            .send(GrowerThreadKick)
             .unwrap();
     }
 
     pub fn stop(&self) {
-        self.num_rounds.store(0, Ordering::Release);
+        self.num_rounds.store(0, Ordering::Relaxed);
     }
 
-    pub fn update_selected(&self, sel: Option<CurrentlySelected>) {
-        *self.cur_selected.lock().unwrap() = sel;
-    }
-
-    pub fn remaining_rounds(&self) -> usize {
-        self.num_rounds.load(Ordering::Acquire)
-    }
-
-    pub fn join(&mut self) -> std::thread::Result<()> {
+    pub fn join(&self) -> std::thread::Result<()> {
         self.stop();
-        let handle = self.thread.replace(None);
-        let tx = self.tx.take();
+        let handle = self.thread.lock().unwrap().take();
+        let tx = self.tx.lock().unwrap().take();
         if let (Some(handle), Some(tx)) = (handle, tx) {
             drop(tx); // the thread should wake and exit
             handle.join()
@@ -108,52 +108,35 @@ impl Grower {
 
 #[derive(Debug)]
 struct GrowerThread {
-    num_rounds: Arc<AtomicUsize>,
+    grower: Arc<Grower>,
     rx: Receiver<GrowerThreadKick>,
-
-    num_objects: usize,
-    use_delay: Duration,
-    cur_selected: Arc<Mutex<Option<CurrentlySelected>>>,
 }
 
 type GrowerThreadHandle = JoinHandle<()>;
 
 /// Message sent to the GrowingThread
-struct GrowerThreadKick {
-    num_rounds: usize,
-    num_objects: usize,
-    use_delay: Duration,
-}
+struct GrowerThreadKick;
 
 impl GrowerThread {
     fn spawn(
+        grower: Arc<Grower>,
         rx: Receiver<GrowerThreadKick>,
-        num_rounds: Arc<AtomicUsize>,
-        cur_selected: Arc<Mutex<Option<CurrentlySelected>>>,
     ) -> GrowerThreadHandle {
         thread::spawn(move || {
             let inner = GrowerThread {
-                num_rounds,
-                rx,
-
-                num_objects: 0,
-                use_delay: Duration::ZERO,
-                cur_selected,
+                grower,
+                rx
             };
             inner.run();
         })
     }
 
-    fn run(mut self) {
+    fn run(self) {
         loop {
             match self.rx.recv() {
                 Err(_) => break,
-                Ok(kick) => {
-                    self.num_objects = kick.num_objects;
-                    self.use_delay = kick.use_delay;
-                    // keep running until either we finish or get stopped
-                    self.num_rounds.store(kick.num_rounds, Ordering::Release);
-                    while self.num_rounds.load(Ordering::Acquire) > 0 {
+                Ok(_) => {
+                    while self.grower.num_rounds.load(Ordering::Relaxed) > 0 {
                         let _ = self.do_round();
                     }
                 }
@@ -162,31 +145,32 @@ impl GrowerThread {
     }
 
     fn do_round(&self) -> Result<(), ()> {
-        if self.num_objects == 0 {
+        let grower = &self.grower;
+        if grower.num_objects.load(Ordering::Relaxed) == 0 {
             return Ok(());
         }
 
         use CurrentlySelected as C;
-        let sel = *self.cur_selected.lock().unwrap();
+        let sel: C = grower.cur_selected.load(Ordering::Relaxed).try_into().unwrap();
         match sel {
-            None => {
+            C::None => {
                 return self.interruptible_sleep(Duration::from_millis(5000));
             }
-            Some(C::Thisty) => {
+            C::Thisty => {
                 self.do_use_round()?;
             }
-            Some(C::Hungry) => {
+            C::Hungry => {
                 self.do_use_round()?;
             }
-            Some(C::Ripe) => {
+            C::Ripe => {
                 self.do_use_round()?;
 
-                assert!(self.num_rounds.load(Ordering::Acquire) > 0);
-                self.num_rounds.fetch_sub(1, Ordering::AcqRel);
+                assert!(self.grower.num_rounds.load(Ordering::Relaxed) > 0);
+                self.grower.num_rounds.fetch_sub(1, Ordering::Relaxed);
             }
         }
 
-        if self.num_rounds.load(Ordering::Acquire) == 0 {
+        if self.grower.num_rounds.load(Ordering::Relaxed) == 0 {
             return Ok(());
         }
 
@@ -205,11 +189,12 @@ impl GrowerThread {
     }
 
     fn do_use_round(&self) -> Result<(), ()> {
-        if !self.use_delay.is_zero() {
-            self.interruptible_sleep(self.use_delay)?;
+        let extra_delay_secs = self.grower.extra_delay_secs.load(Ordering::Relaxed);
+        if extra_delay_secs > 0 {
+            self.interruptible_sleep(Duration::from_secs(extra_delay_secs as u64))?;
         }
 
-        for _ in 0..self.num_objects {
+        for _ in 0..self.grower.num_objects.load(Ordering::Relaxed) {
             send_keypress(0x55); // U key (use)
             self.interruptible_sleep(std::time::Duration::from_millis(150))?;
             send_keypress(0x55); // U key (use)
@@ -225,7 +210,7 @@ impl GrowerThread {
         const SLEEP_TICK_MS: u128 = 100;
         if dur.as_millis() < SLEEP_TICK_MS {
             std::thread::sleep(dur);
-            return match self.num_rounds.load(Ordering::Acquire) {
+            return match self.grower.num_rounds.load(Ordering::Relaxed) {
                 0 => Err(()),
                 _ => Ok(()),
             };
@@ -233,7 +218,7 @@ impl GrowerThread {
 
         for _ in 0..(dur.as_millis() / SLEEP_TICK_MS) {
             std::thread::sleep(std::time::Duration::from_millis(SLEEP_TICK_MS as u64));
-            if self.num_rounds.load(Ordering::Acquire) == 0 {
+            if self.grower.num_rounds.load(Ordering::Relaxed) == 0 {
                 return Err(());
             }
         }

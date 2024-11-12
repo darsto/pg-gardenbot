@@ -9,7 +9,8 @@ use grower::Grower;
 use nwd::NwgUi;
 use nwg::NativeUi;
 
-use std::convert::TryFrom;
+use std::sync::atomic::Ordering;
+use std::{convert::TryFrom, sync::Arc};
 use std::io::Write;
 use std::os::windows::process::CommandExt;
 use std::process::Stdio;
@@ -28,7 +29,7 @@ use screenshot::{Rectangle, Screenshot};
 
 #[derive(Default, NwgUi)]
 pub struct BasicApp {
-    #[nwg_control(size: (275, 290), position: (100, 100), icon: None, topmost: true, title: "Gardenbot", flags: "WINDOW|VISIBLE")]
+    #[nwg_control(size: (275, 220), position: (100, 100), icon: None, topmost: true, title: "Gardenbot", flags: "WINDOW|VISIBLE")]
     #[nwg_events(OnInit: [BasicApp::on_init], OnWindowClose: [BasicApp::on_close])]
     window: nwg::Window,
 
@@ -64,7 +65,7 @@ pub struct BasicApp {
     #[nwg_events(OnButtonClick: [BasicApp::on_select_area_btn])]
     select_area_btn: nwg::Button,
 
-    #[nwg_control(position: (10, 180), size: (255, 100))]
+    #[nwg_control(position: (10, 180), size: (255, 30))]
     select_area_bgimg: nwg::ImageFrame,
 
     #[nwg_control(position: (10, 180), size: (0, 0))]
@@ -84,7 +85,7 @@ struct AppState {
     select_rect_bitmap: nwg::Bitmap,
 
     org_num_rounds: usize,
-    grower: Grower,
+    grower: Arc<Grower>,
 }
 
 impl Default for AppState {
@@ -122,7 +123,7 @@ impl BasicApp {
     }
 
     fn init_select_area_bgimg(&self, state: &mut AppState) {
-        let dimensions: (u32, u32) = (255, 100);
+        let dimensions: (u32, u32) = (255, 30);
 
         let mut bmpdata: Vec<u8> = Vec::new();
         let row_size = (dimensions.0 * 3).next_multiple_of(4) as usize;
@@ -154,7 +155,7 @@ impl BasicApp {
         let mut rbuilder = richbuilder::RichBuilder::new(&self.rich_text_box);
 
         rbuilder.append("Gardenbot is ", nwg::CharFormat::default());
-        if state.grower.remaining_rounds() > 0 {
+        if state.grower.num_rounds.load(Ordering::Relaxed) > 0 {
             rbuilder.append(
                 "online",
                 nwg::CharFormat {
@@ -184,7 +185,7 @@ impl BasicApp {
     }
 
     fn update_logic(&self, state: &mut AppState) {
-        let running = state.grower.remaining_rounds() > 0;
+        let running = state.grower.num_rounds.load(Ordering::Relaxed) > 0;
         if running != (self.startstop_btn.text() == "Stop") {
             self.startstop(state, running);
             self.update_rich_text(state, "");
@@ -199,8 +200,8 @@ impl BasicApp {
         let scanned_str = ocr_bmpdata(bmpdata.as_slice()).replace('\n', "");
         self.update_rich_text(state, &scanned_str);
 
-        let matching_selection = grower::CurrentlySelected::try_from(scanned_str.as_str()).ok();
-        state.grower.update_selected(matching_selection);
+        let matching_selection = grower::CurrentlySelected::try_from(scanned_str.as_str()).unwrap();
+        state.grower.cur_selected.store(matching_selection.into(), Ordering::Relaxed);
     }
 
     fn update_select_rect(&self, state: &mut AppState) -> Option<Vec<u8>> {
@@ -269,14 +270,15 @@ impl BasicApp {
     fn startstop(&self, state: &mut AppState, start: bool) {
         if start {
             state.org_num_rounds = self.num_rounds_input.text().parse::<usize>().unwrap();
-            state.grower.start(
-                state.org_num_rounds,
-                self.num_growing_objects_input
-                    .text()
-                    .parse::<usize>()
-                    .unwrap(),
-                Duration::from_secs(self.extra_delay_sec_input.text().parse::<u64>().unwrap()),
-            );
+
+            let grower = &state.grower;
+            grower.num_rounds.store(state.org_num_rounds, Ordering::Relaxed);
+            grower.num_objects.store(self.num_growing_objects_input
+                .text()
+                .parse::<usize>()
+                .unwrap(), Ordering::Relaxed);
+            grower.extra_delay_secs.store(self.extra_delay_sec_input.text().parse::<usize>().unwrap(), Ordering::Relaxed);
+            grower.start();
 
             self.startstop_btn.set_text("Stop");
             self.num_rounds_input.set_readonly(true);
@@ -289,7 +291,7 @@ impl BasicApp {
         } else {
             state.grower.stop();
             self.num_rounds_input
-                .set_text(&format!("{}", state.org_num_rounds));
+                .set_text(&state.org_num_rounds.to_string());
 
             self.startstop_btn.set_text("Start");
             self.num_rounds_input.set_readonly(false);
