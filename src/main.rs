@@ -8,7 +8,8 @@ use bmp::{BMPHeader, InfoHeader};
 use grower::{CurrentlySelected, Grower};
 use nwd::NwgUi;
 use nwg::NativeUi;
-use winapi::um::winuser::WS_EX_TRANSPARENT;
+use winapi::um::libloaderapi::GetModuleHandleW;
+use winapi::um::winuser::{LoadIconW, SetClassLongPtrA, GCLP_HICON, GCLP_HICONSM, MAKEINTRESOURCEW, WS_EX_TRANSPARENT};
 
 use std::io::Write;
 use std::os::windows::process::CommandExt;
@@ -440,15 +441,15 @@ fn ocr_bmpdata(bmpdata: &[u8]) -> String {
 }
 
 fn main() {
+    // print messages in the parent console, if any
+    unsafe { winapi::um::wincon::AttachConsole(u32::MAX) };
+
     // TODO: is this needed?
     unsafe {
         winapi::um::shellscalingapi::SetProcessDpiAwareness(
             winapi::um::shellscalingapi::PROCESS_DPI_UNAWARE,
         );
     }
-
-    // print messages in the parent console, if any
-    unsafe { winapi::um::wincon::AttachConsole(u32::MAX) };
 
     nwg::init().expect("Failed to init Native Windows GUI");
 
@@ -461,7 +462,21 @@ fn main() {
 
     nwg::Font::set_global_default(Some(font));
 
-    let _app = BasicApp::build_ui(Default::default()).expect("Failed to build UI");
+    let app = BasicApp::build_ui(Default::default()).expect("Failed to build UI");
+
+    unsafe {
+        let h_instance = GetModuleHandleW(std::ptr::null());
+        assert!(!h_instance.is_null());
+        let icon = LoadIconW(h_instance, MAKEINTRESOURCEW(32512));
+        assert!(!icon.is_null());
+        let nwg::ControlHandle::Hwnd(win_hwnd) = app.window.handle else {
+            unreachable!();
+        };
+        // WM_SETICON doesn't update taskbar icon on Windows 11, so update the Window Class instead
+        SetClassLongPtrA(win_hwnd, GCLP_HICON, icon as _);
+        SetClassLongPtrA(win_hwnd, GCLP_HICONSM, icon as _);
+    }
+
     nwg::dispatch_thread_events();
 
     println!("Exiting");
