@@ -25,17 +25,22 @@ https://imagemagick.org/script/download.php
 
 Currently the tesseract.exe is expected at
 `C:\\Program Files\\Tesseract-OCR\\tesseract.exe` and imagemagick's convert.exe
-at `C:\\Program Files\\ImageMagick\\convert.exe`. Those are hardcoded in `main.rs``.
+at `C:\\Program Files\\ImageMagick\\convert.exe`. Those are hardcoded in `main.rs`.
 
 The gardening bot is also simulating certain hardcoded keypresses. Those are inside
-`grower.rs``.
+`grower.rs`.
 
 Most of the code for taking screenshots (and selecting an area within - cropping) was
 taken from https://github.com/nasso/screensnap.
 
 ## Building and running:
 
-1. Install Rustup. I used a MinGW toolchain, without Visual Studio whatsoever, but
-any Rust installation should work.
-2. Inside the gardenbot dir run `cargo run`. This should build an exe, print a full
-path to it, then run it.
+Easiest to cross-compile from Linux (or WSL on Windows?):
+
+1. Install [Rust compiler](https://rustup.rs)
+2. Build
+```
+$ cargo build --target x86_64-pc-windows-gnu --release
+$ ls -lh target/x86_64-pc-windows-gnu/release/pg-gardenbot.exe
+[...] 7.6M pg-gardenbot.exe
+```
